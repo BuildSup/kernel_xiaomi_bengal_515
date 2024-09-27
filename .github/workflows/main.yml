@@ -1,0 +1,131 @@
+name: Build Android Kernel
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Android Kernel
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Notify Build Start
+        run: |
+          curl -s -X POST https://api.telegram.org/bot7610782174:AAG6Qi8UexM4LDJujrlMYD73J8gl4IU6d6E/sendMessage \
+          -d chat_id=4585308458 \
+          -d text="⚙️ Android Kernel Build Started: Commit - ${{ github.sha }}"
+
+      - name: Set up dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libncurses-dev \
+            bison \
+            flex \
+            libssl-dev \
+            libelf-dev \
+            ccache \
+            bc \
+            git \
+            python3 \
+            unzip \
+            wget
+
+      - name: Clone Proton Clang
+        run: |
+          if [ -d $(pwd)/../proton-clang ] ; then
+            echo "Proton Clang already exists."
+          else
+            git clone https://github.com/kdrag0n/proton-clang.git --depth=1 $(pwd)/../proton-clang
+          fi
+
+      - name: Compile Kernel
+        run: |
+          export KBUILD_BUILD_USER="${{ github.actor }}"  # Set to GitHub username
+          export KBUILD_BUILD_HOST="gar.topaz"  # Set to static value gar.topaz
+          export TC_DIR="$(pwd)/../proton-clang"
+          export PATH="$TC_DIR/bin:$PATH"
+
+          # Change DEFCONFIG as per your device
+          DEFCONFIG="vendor/trinket-perf_defconfig"
+
+          # Create output directory and run make commands
+          mkdir -p out
+          make O=out ARCH=arm64 $DEFCONFIG
+          make -j$(nproc --all) O=out ARCH=arm64 CC=clang AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy \
+               OBJDUMP=llvm-objdump STRIP=llvm-strip CROSS_COMPILE=aarch64-linux-gnu- \
+               CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+
+      - name: Archive Kernel
+        if: success()
+        run: |
+          tar -czvf android-kernel-build.tar.gz out/arch/arm64/boot/Image.gz
+
+      - name: Upload Kernel Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: android-kernel-build
+          path: android-kernel-build.tar.gz
+
+      - name: Notify Build Success
+        if: success()
+        run: |
+          curl -s -X POST https://api.telegram.org/bot7610782174:AAG6Qi8UexM4LDJujrlMYD73J8gl4IU6d6E/sendMessage \
+          -d chat_id=4585308458 \
+          -d text="✅ Android Kernel Build Completed Successfully: Commit - ${{ github.sha }}"
+
+      - name: Notify Build Failure
+        if: failure()
+        run: |
+          curl -s -X POST https://api.telegram.org/bot7610782174:AAG6Qi8UexM4LDJujrlMYD73J8gl4IU6d6E/sendMessage \
+          -d chat_id=4585308458 \
+          -d text="❌ Android Kernel Build Failed: Commit - ${{ github.sha }}"
+
+  release:
+    name: Release Android Kernel
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: android-kernel-build
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ github.run_number }}
+          release_name: Android Kernel Build v${{ github.run_number }}
+          draft: false
+          prerelease: false
+
+      - name: Upload Kernel to Release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: android-kernel-build.tar.gz
+          asset_name: android-kernel-build.tar.gz
+          asset_content_type: application/gzip
+
+      - name: Notify Release
+        run: |
+          curl -s -X POST https://api.telegram.org/bot7610782174:AAG6Qi8UexM4LDJujrlMYD73J8gl4IU6d6E/sendMessage \
+          -d chat_id=4585308458 \
+          -d text="📦 New Android Kernel Release: [Release Link](${{ steps.create_release.outputs.html_url }})"
